@@ -80,6 +80,13 @@ defmodule PhoenixFilament.AI do
     |> maybe_add_route(config, :chat_page, "/ai/chat", PhoenixFilamentAI.ChatLive, :index)
     |> maybe_add_route(
       config,
+      :chat_page,
+      "/ai/chat/:conversation_id",
+      PhoenixFilamentAI.ChatLive,
+      :show
+    )
+    |> maybe_add_route(
+      config,
       :conversations,
       "/ai/conversations",
       PhoenixFilamentAI.ConversationsLive,
