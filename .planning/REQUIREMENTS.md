@@ -104,58 +104,58 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PLUG-01 | — | Pending |
-| PLUG-02 | — | Pending |
-| PLUG-03 | — | Pending |
-| PLUG-04 | — | Pending |
-| PLUG-05 | — | Pending |
-| CHAT-01 | — | Pending |
-| CHAT-02 | — | Pending |
-| CHAT-03 | — | Pending |
-| CHAT-04 | — | Pending |
-| CHAT-05 | — | Pending |
-| CHAT-06 | — | Pending |
-| CHAT-07 | — | Pending |
-| CHAT-08 | — | Pending |
-| CHAT-09 | — | Pending |
-| CHAT-10 | — | Pending |
-| CHAT-11 | — | Pending |
-| CHAT-12 | — | Pending |
-| CHAT-13 | — | Pending |
-| CHAT-14 | — | Pending |
-| CHAT-15 | — | Pending |
-| CHAT-16 | — | Pending |
-| CONV-01 | — | Pending |
-| CONV-02 | — | Pending |
-| CONV-03 | — | Pending |
-| CONV-04 | — | Pending |
-| CONV-05 | — | Pending |
-| CONV-06 | — | Pending |
-| CONV-07 | — | Pending |
-| CONV-08 | — | Pending |
-| CONV-09 | — | Pending |
-| CONV-10 | — | Pending |
-| COST-01 | — | Pending |
-| COST-02 | — | Pending |
-| COST-03 | — | Pending |
-| COST-04 | — | Pending |
-| COST-05 | — | Pending |
-| COST-06 | — | Pending |
-| COST-07 | — | Pending |
-| EVNT-01 | — | Pending |
-| EVNT-02 | — | Pending |
-| EVNT-03 | — | Pending |
-| EVNT-04 | — | Pending |
-| INST-01 | — | Pending |
-| INST-02 | — | Pending |
-| INST-03 | — | Pending |
-| INST-04 | — | Pending |
+| PLUG-01 | Phase 1 | Pending |
+| PLUG-02 | Phase 1 | Pending |
+| PLUG-03 | Phase 1 | Pending |
+| PLUG-04 | Phase 1 | Pending |
+| PLUG-05 | Phase 1 | Pending |
+| CHAT-01 | Phase 1 | Pending |
+| CHAT-02 | Phase 1 | Pending |
+| CHAT-03 | Phase 1 | Pending |
+| CHAT-04 | Phase 1 | Pending |
+| CHAT-05 | Phase 1 | Pending |
+| CHAT-06 | Phase 1 | Pending |
+| CHAT-07 | Phase 1 | Pending |
+| CHAT-08 | Phase 1 | Pending |
+| CHAT-09 | Phase 1 | Pending |
+| CHAT-10 | Phase 1 | Pending |
+| CHAT-11 | Phase 1 | Pending |
+| CHAT-12 | Phase 1 | Pending |
+| CHAT-13 | Phase 1 | Pending |
+| CHAT-14 | Phase 1 | Pending |
+| CHAT-15 | Phase 1 | Pending |
+| CHAT-16 | Phase 1 | Pending |
+| CONV-09 | Phase 1 | Pending |
+| CONV-10 | Phase 1 | Pending |
+| CONV-01 | Phase 2 | Pending |
+| CONV-02 | Phase 2 | Pending |
+| CONV-03 | Phase 2 | Pending |
+| CONV-04 | Phase 2 | Pending |
+| CONV-05 | Phase 2 | Pending |
+| CONV-06 | Phase 2 | Pending |
+| CONV-07 | Phase 2 | Pending |
+| CONV-08 | Phase 2 | Pending |
+| COST-01 | Phase 3 | Pending |
+| COST-02 | Phase 3 | Pending |
+| COST-03 | Phase 3 | Pending |
+| COST-04 | Phase 3 | Pending |
+| COST-05 | Phase 3 | Pending |
+| COST-06 | Phase 3 | Pending |
+| COST-07 | Phase 3 | Pending |
+| EVNT-01 | Phase 4 | Pending |
+| EVNT-02 | Phase 4 | Pending |
+| EVNT-03 | Phase 4 | Pending |
+| EVNT-04 | Phase 4 | Pending |
+| INST-01 | Phase 5 | Pending |
+| INST-02 | Phase 5 | Pending |
+| INST-03 | Phase 5 | Pending |
+| INST-04 | Phase 5 | Pending |
 
 **Coverage:**
-- v1 requirements: 45 total
-- Mapped to phases: 0
-- Unmapped: 45 ⚠️
+- v1 requirements: 46 total
+- Mapped to phases: 46
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-05*
-*Last updated: 2026-04-05 after initial definition*
+*Last updated: 2026-04-05 after roadmap creation — all requirements mapped*
