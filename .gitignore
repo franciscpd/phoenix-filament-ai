@@ -1,0 +1,13 @@
+# Superpowers
+.superpowers/
+
+# Elixir/Mix
+/_build/
+/cover/
+/deps/
+/doc/
+*.ez
+*.beam
+
+# OS
+.DS_Store
