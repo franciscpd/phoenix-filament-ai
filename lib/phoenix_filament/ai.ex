@@ -26,6 +26,7 @@ defmodule PhoenixFilament.AI do
   use PhoenixFilament.Plugin
 
   alias PhoenixFilamentAI.Config
+  alias PhoenixFilamentAI.StoreAdapter
 
   @impl true
   def register(_panel, opts) do
@@ -42,10 +43,13 @@ defmodule PhoenixFilament.AI do
   @impl true
   def boot(socket) do
     config = socket.assigns[:phoenix_filament_ai]
+    store = config[:store]
+    ets_warning = config[:ets_warning] != false and ets_backend?(store)
 
     socket
-    |> Phoenix.Component.assign(:ai_store, config[:store])
+    |> Phoenix.Component.assign(:ai_store, store)
     |> Phoenix.Component.assign(:ai_config, config)
+    |> Phoenix.Component.assign(:ai_ets_warning, ets_warning)
   end
 
   # -- Private helpers --
@@ -128,5 +132,11 @@ defmodule PhoenixFilament.AI do
 
   defp build_hooks(_config) do
     []
+  end
+
+  defp ets_backend?(store) do
+    StoreAdapter.backend_type(store) == :ets
+  catch
+    _, _ -> false
   end
 end
