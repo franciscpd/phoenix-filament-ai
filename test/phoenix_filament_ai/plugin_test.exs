@@ -110,6 +110,21 @@ defmodule PhoenixFilamentAI.PluginTest do
       refute "Conversations" in nav_labels
     end
 
+    test "includes conversations route when conversations is enabled" do
+      result = AI.register(FakePanel, valid_plugin_opts(conversations: true))
+
+      conv_route = Enum.find(result.routes, fn route -> route.path == "/ai/conversations" end)
+      assert conv_route != nil
+      assert conv_route.live_view == PhoenixFilamentAI.ConversationsLive
+    end
+
+    test "excludes conversations route when conversations is disabled" do
+      result = AI.register(FakePanel, valid_plugin_opts(conversations: false))
+
+      conv_route = Enum.find(result.routes, fn route -> route.path == "/ai/conversations" end)
+      assert conv_route == nil
+    end
+
     test "includes cost dashboard nav when enabled" do
       result = AI.register(FakePanel, valid_plugin_opts(cost_dashboard: true))
 
