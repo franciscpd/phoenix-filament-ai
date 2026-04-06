@@ -20,6 +20,8 @@ defmodule PhoenixFilament.Table.InMemoryTableLive do
   use Phoenix.LiveComponent
 
   alias PhoenixFilament.Table.{Filter, Params, TableRenderer}
+
+  require Logger
   import PhoenixFilament.Components.Modal, only: [modal: 1]
 
   # ---------------------------------------------------------------------------
@@ -44,15 +46,13 @@ defmodule PhoenixFilament.Table.InMemoryTableLive do
     term = String.downcase(search)
 
     Enum.filter(rows, fn row ->
-      searchable_columns
-      |> Enum.map(fn col ->
+      Enum.any?(searchable_columns, fn col ->
         row
         |> Map.get(col.name)
         |> to_string()
         |> String.downcase()
+        |> String.contains?(term)
       end)
-      |> Enum.join(" ")
-      |> String.contains?(term)
     end)
   end
 
@@ -207,7 +207,9 @@ defmodule PhoenixFilament.Table.InMemoryTableLive do
     new_params = %{socket.assigns.parsed_params | filters: new_filters, page: 1}
     push_table_patch(socket, new_params)
   rescue
-    ArgumentError -> {:noreply, socket}
+    ArgumentError ->
+      Logger.warning("InMemoryTableLive: ignoring filter with unknown atom key")
+      {:noreply, socket}
   end
 
   def handle_event("paginate", %{"page" => page}, socket) do

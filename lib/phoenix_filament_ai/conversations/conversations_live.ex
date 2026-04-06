@@ -123,14 +123,26 @@ defmodule PhoenixFilamentAI.ConversationsLive do
     conversation = socket.assigns.conversation
     content = Exporter.to_json(conversation)
     filename = export_filename(conversation, "json")
-    {:noreply, push_event(socket, "download", %{data: content, filename: filename})}
+
+    {:noreply,
+     push_event(socket, "pfa:download", %{
+       content: Base.encode64(content),
+       filename: filename,
+       content_type: "application/json"
+     })}
   end
 
   def handle_event("export_markdown", _params, socket) do
     conversation = socket.assigns.conversation
     content = Exporter.to_markdown(conversation)
     filename = export_filename(conversation, "md")
-    {:noreply, push_event(socket, "download", %{data: content, filename: filename})}
+
+    {:noreply,
+     push_event(socket, "pfa:download", %{
+       content: Base.encode64(content),
+       filename: filename,
+       content_type: "text/markdown"
+     })}
   end
 
   def handle_event("delete_conversation", %{"id" => id}, socket) do
@@ -223,7 +235,7 @@ defmodule PhoenixFilamentAI.ConversationsLive do
 
   def render(%{view: :show} = assigns) do
     ~H"""
-    <div class="pfa-conversations-page">
+    <div class="pfa-conversations-page" id="conversations-show" phx-hook="PfaDownload">
       <.link patch={conversations_path()} class="pfa-conversations-back">
         &larr; Back to conversations
       </.link>

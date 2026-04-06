@@ -96,6 +96,13 @@ defmodule PhoenixFilament.AI do
       PhoenixFilamentAI.ConversationsLive,
       :index
     )
+    |> maybe_add_route(
+      config,
+      :conversations,
+      "/ai/conversations/:id",
+      PhoenixFilamentAI.ConversationsLive,
+      :show
+    )
     |> maybe_add_route(config, :cost_dashboard, "/ai/costs", PhoenixFilamentAI.CostsLive, :index)
     |> maybe_add_route(config, :event_log, "/ai/events", PhoenixFilamentAI.EventsLive, :index)
   end

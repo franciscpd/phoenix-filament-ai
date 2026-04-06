@@ -235,7 +235,14 @@ defmodule PhoenixFilamentAI.StoreAdapter do
     end
   end
 
-  @doc "Lists all conversations with computed stats for table display."
+  @doc """
+  Lists all conversations with computed stats for table display.
+
+  Computes `message_count`, `total_cost`, and `status` per conversation.
+  This issues one `sum_cost` call per conversation (O(N) store calls).
+  Suitable for up to ~1000 conversations. For larger datasets, consider
+  adding server-side aggregation to the Store API.
+  """
   @spec list_conversations_with_stats(atom(), keyword()) :: [map()]
   def list_conversations_with_stats(store, opts \\ []) do
     case list_conversations(store, opts) do
