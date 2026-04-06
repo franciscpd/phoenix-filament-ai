@@ -223,6 +223,34 @@ defmodule PhoenixFilamentAI.StoreAdapter do
   end
 
   # -------------------------------------------------------------------
+  # Conversation stats
+  # -------------------------------------------------------------------
+
+  @doc "Loads a conversation with computed message_count and total_cost."
+  @spec get_conversation_with_stats(atom(), String.t()) :: {:ok, map()} | {:error, term()}
+  def get_conversation_with_stats(store, id) do
+    with {:ok, conversation} <- get_conversation(store, id) do
+      stats = build_stats(store, conversation)
+      {:ok, Map.merge(Map.from_struct(conversation), stats)}
+    end
+  end
+
+  @doc "Lists all conversations with computed stats for table display."
+  @spec list_conversations_with_stats(atom(), keyword()) :: [map()]
+  def list_conversations_with_stats(store, opts \\ []) do
+    case list_conversations(store, opts) do
+      {:ok, conversations} ->
+        Enum.map(conversations, fn conv ->
+          stats = build_stats(store, conv)
+          Map.merge(Map.from_struct(conv), stats)
+        end)
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  # -------------------------------------------------------------------
   # Store info
   # -------------------------------------------------------------------
 
@@ -245,6 +273,25 @@ defmodule PhoenixFilamentAI.StoreAdapter do
   # -------------------------------------------------------------------
   # Private helpers
   # -------------------------------------------------------------------
+
+  defp build_stats(store, conversation) do
+    message_count = length(conversation.messages || [])
+    total_cost = compute_total_cost(store, conversation.id)
+    status = if conversation.deleted_at, do: :deleted, else: :active
+
+    %{
+      message_count: message_count,
+      total_cost: total_cost,
+      status: status
+    }
+  end
+
+  defp compute_total_cost(store, conversation_id) do
+    case Store.sum_cost([conversation_id: conversation_id], store: store) do
+      {:ok, total} -> total
+      {:error, _} -> Decimal.new("0")
+    end
+  end
 
   defp maybe_put(struct, key, attrs) do
     if Map.has_key?(attrs, key) do

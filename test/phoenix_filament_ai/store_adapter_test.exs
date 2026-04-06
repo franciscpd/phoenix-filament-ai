@@ -178,6 +178,42 @@ defmodule PhoenixFilamentAI.StoreAdapterTest do
   end
 
   # -------------------------------------------------------------------
+  # Conversation stats
+  # -------------------------------------------------------------------
+
+  describe "get_conversation_with_stats/2" do
+    test "returns conversation with message_count and total_cost" do
+      {:ok, conv} = StoreAdapter.create_conversation(@store_name, %{title: "Stats Test"})
+      {:ok, with_stats} = StoreAdapter.get_conversation_with_stats(@store_name, conv.id)
+
+      assert with_stats.id == conv.id
+      assert with_stats.title == "Stats Test"
+      assert is_integer(with_stats.message_count)
+      assert with_stats.message_count >= 0
+      assert with_stats.total_cost != nil
+      assert with_stats.status == :active
+    end
+
+    test "returns error for non-existent conversation" do
+      assert {:error, _} = StoreAdapter.get_conversation_with_stats(@store_name, "nonexistent")
+    end
+  end
+
+  describe "list_conversations_with_stats/1" do
+    test "returns list of conversations with stats" do
+      {:ok, _} = StoreAdapter.create_conversation(@store_name, %{title: "Stats List 1"})
+      result = StoreAdapter.list_conversations_with_stats(@store_name)
+
+      assert is_list(result)
+      assert length(result) >= 1
+      first = hd(result)
+      assert Map.has_key?(first, :message_count)
+      assert Map.has_key?(first, :total_cost)
+      assert Map.has_key?(first, :status)
+    end
+  end
+
+  # -------------------------------------------------------------------
   # Converse — skipped in unit tests (requires AI provider)
   # -------------------------------------------------------------------
 
