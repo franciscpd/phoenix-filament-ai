@@ -2,6 +2,7 @@ defmodule PhoenixFilament.Table.InMemoryTableLiveTest do
   use ExUnit.Case, async: true
 
   alias PhoenixFilament.Column
+  alias PhoenixFilament.Table.Filter
   alias PhoenixFilament.Table.InMemoryTableLive
 
   @sample_rows [
@@ -40,6 +41,17 @@ defmodule PhoenixFilament.Table.InMemoryTableLiveTest do
     Column.new(:email, sortable: true, searchable: true),
     Column.new(:active),
     Column.new(:inserted_at, sortable: true)
+  ]
+
+  @filters [
+    %Filter{type: :boolean, field: :active, label: "Active"},
+    %Filter{type: :date_range, field: :inserted_at, label: "Inserted At"},
+    %Filter{
+      type: :select,
+      field: :name,
+      label: "Name",
+      options: ["Alice", "Bob", "Charlie", "Diana"]
+    }
   ]
 
   # ---------------------------------------------------------------------------
@@ -268,6 +280,89 @@ defmodule PhoenixFilament.Table.InMemoryTableLiveTest do
       {rows, meta} = InMemoryTableLive.apply_pagination([], 1, 10)
       assert rows == []
       assert meta.total == 0
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # apply_filters/3
+  # ---------------------------------------------------------------------------
+
+  describe "apply_filters/3" do
+    test "returns all rows when active_filters is empty" do
+      result = InMemoryTableLive.apply_filters(@sample_rows, %{}, @filters)
+      assert result == @sample_rows
+    end
+
+    test "boolean filter true returns only active rows" do
+      result = InMemoryTableLive.apply_filters(@sample_rows, %{active: "true"}, @filters)
+      assert length(result) == 3
+      assert Enum.all?(result, &(&1.active == true))
+    end
+
+    test "boolean filter false returns only inactive rows" do
+      result = InMemoryTableLive.apply_filters(@sample_rows, %{active: "false"}, @filters)
+      assert length(result) == 1
+      assert hd(result).name == "Bob"
+      assert hd(result).active == false
+    end
+
+    test "select filter matches string value" do
+      result = InMemoryTableLive.apply_filters(@sample_rows, %{name: "Alice"}, @filters)
+      assert length(result) == 1
+      assert hd(result).name == "Alice"
+    end
+
+    test "date_range filter returns rows within range" do
+      # Range covers Feb and Mar: Bob (2026-02-20) and Charlie (2026-03-10)
+      result =
+        InMemoryTableLive.apply_filters(
+          @sample_rows,
+          %{inserted_at: "2026-02-01|2026-03-31"},
+          @filters
+        )
+
+      names = Enum.map(result, & &1.name)
+      assert length(result) == 2
+      assert "Bob" in names
+      assert "Charlie" in names
+    end
+
+    test "date_range filter excludes rows outside range" do
+      # Only Alice: 2026-01-15
+      result =
+        InMemoryTableLive.apply_filters(
+          @sample_rows,
+          %{inserted_at: "2026-01-01|2026-01-31"},
+          @filters
+        )
+
+      assert length(result) == 1
+      assert hd(result).name == "Alice"
+    end
+
+    test "multiple filters compose with AND logic" do
+      # active=true AND inserted_at in Feb-Mar → only Charlie (2026-03-10, active=true)
+      # Bob is in range but active=false; Diana is active=true but inserted_at 2026-04-05 out of range
+      result =
+        InMemoryTableLive.apply_filters(
+          @sample_rows,
+          %{active: "true", inserted_at: "2026-02-01|2026-03-31"},
+          @filters
+        )
+
+      assert length(result) == 1
+      assert hd(result).name == "Charlie"
+    end
+
+    test "unknown filter field (no matching filter_def) is ignored" do
+      # :nonexistent has no filter_def, so all rows returned
+      result = InMemoryTableLive.apply_filters(@sample_rows, %{nonexistent: "value"}, @filters)
+      assert result == @sample_rows
+    end
+
+    test "nil active filter value is ignored" do
+      result = InMemoryTableLive.apply_filters(@sample_rows, %{active: nil}, @filters)
+      assert result == @sample_rows
     end
   end
 end

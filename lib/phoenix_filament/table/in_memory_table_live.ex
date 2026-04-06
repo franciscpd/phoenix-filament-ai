@@ -19,6 +19,8 @@ defmodule PhoenixFilament.Table.InMemoryTableLive do
 
   use Phoenix.LiveComponent
 
+  alias PhoenixFilament.Table.Filter
+
   # ---------------------------------------------------------------------------
   # Public pipeline functions
   # ---------------------------------------------------------------------------
@@ -69,6 +71,48 @@ defmodule PhoenixFilament.Table.InMemoryTableLive do
       val_b = Map.get(b, sort_by)
       compare_values(val_a, val_b, sort_dir)
     end)
+  end
+
+  @doc """
+  Filters `rows` by `active_filters` using the matching logic defined in `filter_defs`.
+
+  `active_filters` is a map of `%{field_atom => value_string}` — values are always
+  strings (e.g. from URL params). `filter_defs` is a list of `%Filter{}` structs.
+
+  Filters compose with AND logic. Returns all rows when `active_filters` is empty.
+  Nil or missing values in `active_filters` are ignored. Fields in `active_filters`
+  with no matching filter definition are also ignored.
+
+  | Filter type  | Matching logic                                                  |
+  |--------------|------------------------------------------------------------------|
+  | `:select`    | `to_string(row[field]) == value`                                |
+  | `:boolean`   | `"true"` → field is `true`; `"false"` → field is `false`       |
+  | `:date_range`| `"from|to"` pipe-separated ISO dates; field supports DateTime  |
+  """
+  @spec apply_filters(list(map()), %{atom() => String.t() | nil}, list(Filter.t())) ::
+          list(map())
+  def apply_filters(rows, active_filters, _filter_defs) when map_size(active_filters) == 0,
+    do: rows
+
+  def apply_filters(rows, active_filters, filter_defs) do
+    active_defs =
+      Enum.reduce(filter_defs, [], fn %Filter{field: field} = filter_def, acc ->
+        case Map.get(active_filters, field) do
+          nil -> acc
+          "" -> acc
+          value -> [{filter_def, value} | acc]
+        end
+      end)
+
+    if active_defs == [] do
+      rows
+    else
+      Enum.filter(rows, fn row ->
+        Enum.all?(active_defs, fn {filter_def, value} ->
+          apply_single_filter(row, filter_def, value)
+        end)
+      end)
+    end
   end
 
   @doc """
@@ -124,4 +168,41 @@ defmodule PhoenixFilament.Table.InMemoryTableLive do
 
   defp compare_values(a, b, :asc), do: to_string(a) <= to_string(b)
   defp compare_values(a, b, :desc), do: to_string(a) >= to_string(b)
+
+  # ---------------------------------------------------------------------------
+  # Filter helpers
+  # ---------------------------------------------------------------------------
+
+  defp apply_single_filter(row, %Filter{type: :select, field: field}, value) do
+    to_string(Map.get(row, field)) == value
+  end
+
+  defp apply_single_filter(row, %Filter{type: :boolean, field: field}, "true") do
+    Map.get(row, field) == true
+  end
+
+  defp apply_single_filter(row, %Filter{type: :boolean, field: field}, "false") do
+    Map.get(row, field) == false
+  end
+
+  defp apply_single_filter(_row, %Filter{type: :boolean}, _value), do: true
+
+  defp apply_single_filter(row, %Filter{type: :date_range, field: field}, value) do
+    with [from_str, to_str] <- String.split(value, "|", parts: 2),
+         {:ok, from_date} <- Date.from_iso8601(from_str),
+         {:ok, to_date} <- Date.from_iso8601(to_str) do
+      row_date = row |> Map.get(field) |> to_date()
+
+      case row_date do
+        nil -> false
+        date -> Date.compare(date, from_date) != :lt and Date.compare(date, to_date) != :gt
+      end
+    else
+      _ -> true
+    end
+  end
+
+  defp to_date(%DateTime{} = dt), do: DateTime.to_date(dt)
+  defp to_date(%Date{} = d), do: d
+  defp to_date(_), do: nil
 end
