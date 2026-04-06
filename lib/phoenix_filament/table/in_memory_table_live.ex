@@ -19,7 +19,8 @@ defmodule PhoenixFilament.Table.InMemoryTableLive do
 
   use Phoenix.LiveComponent
 
-  alias PhoenixFilament.Table.Filter
+  alias PhoenixFilament.Table.{Filter, Params, TableRenderer}
+  import PhoenixFilament.Components.Modal, only: [modal: 1]
 
   # ---------------------------------------------------------------------------
   # Public pipeline functions
@@ -129,6 +130,207 @@ defmodule PhoenixFilament.Table.InMemoryTableLive do
     page_rows = Enum.slice(rows, offset, per_page)
     meta = %{page: page, per_page: per_page, total: total}
     {page_rows, meta}
+  end
+
+  # ---------------------------------------------------------------------------
+  # LiveComponent lifecycle
+  # ---------------------------------------------------------------------------
+
+  @impl true
+  def update(assigns, socket) do
+    socket = assign(socket, assigns)
+    page_sizes = socket.assigns[:page_sizes] || [25, 50, 100]
+    params = Params.parse(socket.assigns[:params] || %{}, page_sizes: page_sizes)
+    rows = socket.assigns.rows
+    columns = socket.assigns.columns
+    filters = socket.assigns[:filters] || []
+
+    # Pipeline: search → filter → sort → paginate
+    processed =
+      rows
+      |> apply_search(params.search, columns)
+      |> apply_filters(params.filters, filters)
+      |> apply_sort(params.sort_by, params.sort_dir)
+
+    {page_rows, meta} = apply_pagination(processed, params.page, params.per_page)
+    has_search = Enum.any?(columns, fn col -> Keyword.get(col.opts, :searchable, false) end)
+
+    socket =
+      socket
+      |> assign(:parsed_params, params)
+      |> assign(:meta, meta)
+      |> assign(:has_search, has_search)
+      |> assign_new(:confirm_delete, fn -> nil end)
+      |> assign_new(:actions, fn -> [] end)
+      |> assign_new(:filters, fn -> [] end)
+      |> assign_new(:page_sizes, fn -> page_sizes end)
+      |> assign_new(:empty_message, fn -> "No records found" end)
+      |> assign_new(:empty_action, fn -> nil end)
+      |> stream(:rows, page_rows, reset: true)
+
+    {:ok, socket}
+  end
+
+  # ---------------------------------------------------------------------------
+  # Event handlers
+  # ---------------------------------------------------------------------------
+
+  @impl true
+  def handle_event("sort", %{"column" => column}, socket) do
+    col = String.to_existing_atom(column)
+    params = socket.assigns.parsed_params
+
+    {sort_by, sort_dir} =
+      if params.sort_by == col do
+        {col, if(params.sort_dir == :asc, do: :desc, else: :asc)}
+      else
+        {col, :asc}
+      end
+
+    new_params = %{params | sort_by: sort_by, sort_dir: sort_dir, page: 1}
+    push_table_patch(socket, new_params)
+  end
+
+  def handle_event("search", %{"search" => term}, socket) do
+    new_params = %{socket.assigns.parsed_params | search: term, page: 1}
+    push_table_patch(socket, new_params)
+  end
+
+  def handle_event("filter", params, socket) do
+    filter_params = Map.get(params, "filter", %{})
+
+    new_filters =
+      Map.new(filter_params, fn {k, v} ->
+        {String.to_existing_atom(k), v}
+      end)
+
+    new_params = %{socket.assigns.parsed_params | filters: new_filters, page: 1}
+    push_table_patch(socket, new_params)
+  rescue
+    ArgumentError -> {:noreply, socket}
+  end
+
+  def handle_event("paginate", %{"page" => page}, socket) do
+    new_params = %{socket.assigns.parsed_params | page: String.to_integer(page)}
+    push_table_patch(socket, new_params)
+  end
+
+  def handle_event("per_page", %{"per_page" => per_page}, socket) do
+    new_params = %{
+      socket.assigns.parsed_params
+      | per_page: String.to_integer(per_page),
+        page: 1
+    }
+
+    push_table_patch(socket, new_params)
+  end
+
+  def handle_event("row_action", %{"action" => "delete", "id" => id}, socket) do
+    {:noreply, assign(socket, :confirm_delete, id)}
+  end
+
+  def handle_event("row_action", %{"action" => action, "id" => id}, socket) do
+    send(self(), {:table_action, String.to_existing_atom(action), id})
+    {:noreply, socket}
+  end
+
+  def handle_event("confirm_delete", %{"id" => id}, socket) do
+    send(self(), {:table_action, :delete, id})
+    {:noreply, assign(socket, :confirm_delete, nil)}
+  end
+
+  def handle_event("cancel_delete", _, socket) do
+    {:noreply, assign(socket, :confirm_delete, nil)}
+  end
+
+  defp push_table_patch(socket, params) do
+    query_string = Params.to_query_string(params)
+    send(self(), {:table_patch, query_string})
+    {:noreply, socket}
+  end
+
+  # ---------------------------------------------------------------------------
+  # Render
+  # ---------------------------------------------------------------------------
+
+  @impl true
+  def render(assigns) do
+    ~H"""
+    <div id={@id}>
+      <TableRenderer.search_bar
+        :if={@has_search}
+        search={@parsed_params.search}
+        target={@myself}
+      />
+
+      <TableRenderer.filter_bar
+        :if={@filters != []}
+        filters={@filters}
+        filter_values={@parsed_params.filters}
+        target={@myself}
+      />
+
+      <div :if={@meta.total > 0} class="overflow-x-auto">
+        <table class="table table-zebra">
+          <TableRenderer.table_header
+            columns={@columns}
+            sort_by={@parsed_params.sort_by}
+            sort_dir={@parsed_params.sort_dir}
+            actions={@actions}
+            target={@myself}
+          />
+          <tbody id={"#{@id}-rows"} phx-update="stream">
+            <TableRenderer.table_row
+              :for={{dom_id, row} <- @streams.rows}
+              id={dom_id}
+              columns={@columns}
+              row={row}
+              actions={@actions}
+              target={@myself}
+            />
+          </tbody>
+        </table>
+      </div>
+
+      <TableRenderer.empty_state
+        :if={@meta.total == 0}
+        message={@empty_message}
+        action={@empty_action}
+      />
+
+      <TableRenderer.pagination
+        :if={@meta.total > 0}
+        page={@meta.page}
+        per_page={@meta.per_page}
+        total={@meta.total}
+        page_sizes={@page_sizes}
+        target={@myself}
+      />
+
+      <.modal
+        :if={@confirm_delete}
+        show={@confirm_delete != nil}
+        id={"#{@id}-delete-modal"}
+        on_cancel={nil}
+      >
+        <:header>Confirm Delete</:header>
+        <p>Are you sure you want to delete this record? This action cannot be undone.</p>
+        <:actions>
+          <button
+            class="btn btn-error"
+            phx-click="confirm_delete"
+            phx-value-id={@confirm_delete}
+            phx-target={@myself}
+          >
+            Delete
+          </button>
+          <button class="btn btn-ghost" phx-click="cancel_delete" phx-target={@myself}>
+            Cancel
+          </button>
+        </:actions>
+      </.modal>
+    </div>
+    """
   end
 
   # ---------------------------------------------------------------------------
