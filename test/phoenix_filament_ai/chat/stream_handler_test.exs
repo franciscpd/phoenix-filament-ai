@@ -3,6 +3,28 @@ defmodule PhoenixFilamentAI.Chat.StreamHandlerTest do
 
   alias PhoenixFilamentAI.Chat.StreamHandler
 
+  describe "start/4" do
+    test "returns a Task struct and passes to: option" do
+      # Task.async links to caller, so trap exits to survive the Task crash
+      Process.flag(:trap_exit, true)
+
+      task = StreamHandler.start(:nonexistent_store, "conv-1", "hello", provider: :test)
+      assert %Task{ref: ref} = task
+      assert is_reference(ref)
+
+      # The task will crash (no store running) — flush the messages
+      Process.demonitor(ref, [:flush])
+
+      receive do
+        {:EXIT, _pid, _reason} -> :ok
+      after
+        2000 -> :ok
+      end
+    after
+      Process.flag(:trap_exit, false)
+    end
+  end
+
   describe "classify_error/1" do
     test "classifies timeout errors as retriable" do
       assert StreamHandler.classify_error(:timeout) == :retriable

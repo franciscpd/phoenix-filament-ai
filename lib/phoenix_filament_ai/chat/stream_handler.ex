@@ -1,10 +1,15 @@
 defmodule PhoenixFilamentAI.Chat.StreamHandler do
   @moduledoc """
-  Manages the AI call lifecycle for chat threads.
+  Manages the AI streaming lifecycle for chat threads.
 
-  Launches a non-blocking task for `StoreAdapter.converse/4`, routing
-  the result back to the calling process as `{:ai_complete, response}`
-  or `{:ai_error, reason}`.
+  Spawns a `Task.async` that calls `StoreAdapter.converse/4` with
+  `to: caller_pid`. Streaming chunks are sent by the Store directly
+  to the caller process as `{:phoenix_ai, {:chunk, %StreamChunk{}}}`
+  messages — they bypass the Task entirely.
+
+  The Task's role is to hold the blocking `converse/3` call and return
+  the final `{:ok, response}` or `{:error, reason}` via the standard
+  Task return mechanism (`{ref, result}`).
 
   ## Error Classification
 
@@ -14,15 +19,14 @@ defmodule PhoenixFilamentAI.Chat.StreamHandler do
   - **fatal** — invalid API key, provider down. Requires intervention.
   - **domain** — guardrail violations, content policy. User should rephrase.
 
-  ## Design
+  ## Message Flow
 
-  `PhoenixAI.Store.converse/3` is synchronous — it runs the full pipeline
-  (save user message, load history, memory, guardrails, AI call, save
-  response) and returns `{:ok, response}` or `{:error, term()}`.
+  The caller (parent LiveView) will receive:
 
-  We wrap it in a `Task` via the LiveView `start_async` pattern to keep
-  the UI responsive. Streaming support can be layered on top when the
-  upstream API supports it.
+  1. `{:phoenix_ai, {:chunk, %StreamChunk{delta: "..."}}}` — per token (from Store)
+  2. `{ref, {:ok, %Response{}}}` — when stream completes (from Task)
+  3. `{ref, {:error, reason}}` — on failure (from Task)
+  4. `{:DOWN, ref, :process, pid, reason}` — if Task crashes
   """
 
   alias PhoenixFilamentAI.StoreAdapter
@@ -32,10 +36,10 @@ defmodule PhoenixFilamentAI.Chat.StreamHandler do
   @type error_class :: :retriable | :fatal | :domain
 
   @doc """
-  Starts an async AI converse call, returning the task reference.
+  Starts a streaming AI conversation turn.
 
-  The caller (typically a LiveComponent) should handle the result via
-  `handle_async/3` callbacks.
+  Returns `%Task{}` — the caller should store `task.ref` to match
+  completion messages and demonitor when done.
 
   ## Options
 
@@ -46,23 +50,16 @@ defmodule PhoenixFilamentAI.Chat.StreamHandler do
   - `:system` — system prompt
   - `:tools` — tool definitions
   - `:user_id` — user identifier
+
+  The `to: caller` option is added automatically to enable PID-based
+  streaming from `PhoenixAI.Store`.
   """
   @spec start(atom(), String.t(), String.t(), keyword()) :: Task.t()
   def start(store, conversation_id, message, opts \\ []) do
     caller = self()
 
     Task.async(fn ->
-      result = StoreAdapter.converse(store, conversation_id, message, opts)
-
-      case result do
-        {:ok, response} ->
-          send(caller, {:ai_complete, response})
-          {:ok, response}
-
-        {:error, reason} ->
-          send(caller, {:ai_error, reason})
-          {:error, reason}
-      end
+      StoreAdapter.converse(store, conversation_id, message, Keyword.put(opts, :to, caller))
     end)
   end
 

@@ -1179,7 +1179,7 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
   end
 
   describe "streaming" do
-    test "accumulates chunks and renders progressively" do
+    test "accumulates chunks via send_update and renders progressively" do
       {:ok, view, _html} = mount_component(ChatThread, %{
         id: "test-thread",
         store: :test_store,
@@ -1187,11 +1187,12 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
         config: PhoenixFilamentAI.Fixtures.valid_plugin_opts()
       })
 
-      # Simulate sending a message (triggers streaming)
-      # Then simulate chunks arriving via handle_info
-      send(view.pid, {:ai_chunk, "Hello "})
-      send(view.pid, {:ai_chunk, "world"})
-      send(view.pid, {:ai_complete, %{content: "Hello world", role: :assistant}})
+      # Simulate chunks arriving via send_update (as parent would route them)
+      # Parent receives {:phoenix_ai, {:chunk, %StreamChunk{delta: "..."}}}
+      # and forwards via send_update(ChatThread, id: ..., ai_chunk: chunk)
+      send_update(ChatThread, id: "test-thread", ai_chunk: %{delta: "Hello "})
+      send_update(ChatThread, id: "test-thread", ai_chunk: %{delta: "world"})
+      send_update(ChatThread, id: "test-thread", ai_complete: %{content: "Hello world", role: :assistant})
 
       html = render(view)
       assert html =~ "Hello world"
@@ -1199,7 +1200,7 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
   end
 
   describe "error handling" do
-    test "displays error message on AI failure" do
+    test "displays error message on AI failure via send_update" do
       {:ok, view, _html} = mount_component(ChatThread, %{
         id: "test-thread",
         store: :test_store,
@@ -1207,7 +1208,8 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
         config: PhoenixFilamentAI.Fixtures.valid_plugin_opts()
       })
 
-      send(view.pid, {:ai_error, :timeout})
+      # Parent receives Task error and forwards via send_update
+      send_update(ChatThread, id: "test-thread", ai_error: :timeout)
 
       html = render(view)
       assert html =~ "data-role=\"error\""
@@ -1234,10 +1236,17 @@ defmodule PhoenixFilamentAI.Chat.StreamHandler do
   @moduledoc """
   Manages the streaming lifecycle for AI responses.
 
-  Launches a non-blocking task for the AI call and routes
-  chunks/completion/errors back to the calling LiveView process.
+  Spawns a Task that calls Store.converse/3 with `to: caller_pid`.
+  Streaming chunks are sent by the Store directly to the caller process
+  as `{:phoenix_ai, {:chunk, %StreamChunk{}}}` messages — they bypass
+  the Task entirely.
 
-  Does NOT: render anything, manage message lists, touch the DOM.
+  The Task's role is to hold the blocking converse/3 call and forward
+  the final `{:ok, response}` or `{:error, reason}` via the standard
+  Task return mechanism (`{ref, result}`).
+
+  Does NOT: render anything, manage message lists, touch the DOM,
+  handle individual chunks (Store sends those directly to caller).
   """
 
   alias PhoenixFilamentAI.StoreAdapter
@@ -1246,47 +1255,60 @@ defmodule PhoenixFilamentAI.Chat.StreamHandler do
   Starts a streaming AI conversation turn.
 
   The caller process will receive:
-  - `{:ai_chunk, chunk}` for each token
-  - `{:ai_complete, response}` when done
-  - `{:ai_error, reason}` on failure
+  - `{:phoenix_ai, {:chunk, %PhoenixAI.StreamChunk{delta: "..."}}}` per token (from Store, bypasses Task)
+  - `{ref, {:ok, %PhoenixAI.Response{}}}` when stream completes (from Task)
+  - `{ref, {:error, reason}}` on failure (from Task)
+
+  Returns `%Task{}` — the caller should store `task.ref` for demonitoring.
   """
-  def start_stream(socket, store, conversation_id, message) do
+  @spec start(atom(), String.t(), String.t(), keyword()) :: Task.t()
+  def start(store, conversation_id, message, opts \\ []) do
     caller = self()
 
-    Phoenix.LiveView.start_async(socket, :ai_stream, fn ->
+    Task.async(fn ->
       StoreAdapter.converse(store, conversation_id, message,
-        on_chunk: fn chunk -> send(caller, {:ai_chunk, chunk}) end,
-        on_complete: fn response -> send(caller, {:ai_complete, response}) end,
-        on_error: fn reason -> send(caller, {:ai_error, reason}) end
+        Keyword.merge(opts, to: caller)
       )
     end)
   end
 
   @doc """
-  Classifies an error as retriable or fatal.
+  Classifies an error as retriable, fatal, or domain.
   """
+  @spec classify_error(term()) :: :retriable | :fatal | :domain
   def classify_error(:timeout), do: :retriable
+  def classify_error({:timeout, _}), do: :retriable
   def classify_error(:rate_limit), do: :retriable
+  def classify_error(:rate_limited), do: :retriable
+  def classify_error(:econnrefused), do: :retriable
+  def classify_error(:closed), do: :retriable
   def classify_error(:network_error), do: :retriable
+  def classify_error({:http_error, status}) when status in [429, 500, 502, 503], do: :retriable
   def classify_error(:invalid_api_key), do: :fatal
+  def classify_error(:unauthorized), do: :fatal
   def classify_error(:provider_down), do: :fatal
+  def classify_error({:missing_option, _}), do: :fatal
+  def classify_error({:http_error, status}) when status in [401, 403], do: :fatal
+  def classify_error(%{reason: :guardrail_violation}), do: :domain
+  def classify_error(%{policy: _}), do: :domain
   def classify_error(:guardrail_violation), do: :domain
   def classify_error(_), do: :fatal
 
   @doc """
   Returns a human-readable error message.
   """
-  def error_message(:timeout), do: "Request timed out. Try again?"
-  def error_message(:rate_limit), do: "Rate limit reached. Please wait a moment."
-  def error_message(:network_error), do: "Network error. Check your connection and try again."
-  def error_message(:invalid_api_key), do: "Invalid API key. Check your configuration."
-  def error_message(:provider_down), do: "AI provider is unavailable. Try again later."
-  def error_message(:guardrail_violation), do: "This request was blocked by a content policy."
-  def error_message(_reason), do: "An unexpected error occurred."
+  @spec error_message(term()) :: String.t()
+  def error_message(reason) do
+    case classify_error(reason) do
+      :retriable -> "Something went wrong. Please try again."
+      :fatal -> "A configuration error occurred. Check your settings."
+      :domain -> "This request was blocked by a content policy."
+    end
+  end
 end
 ```
 
-Note: The `start_async` call may need adjustment depending on how `PhoenixAI.Store.converse/3` handles streaming callbacks. If `converse/3` uses a different callback mechanism (e.g., returns a stream), the StreamHandler must adapt. Verify against actual `phoenix_ai_store` source.
+Note: The `to: caller` option tells `PhoenixAI.Store.converse/3` to send `{:phoenix_ai, {:chunk, %StreamChunk{}}}` messages directly to the caller PID. The Task just holds the blocking call and returns the final result. There is NO `on_complete` or `on_error` callback — completion/error is the return value of `converse/3`.
 
 - [ ] **Step 4: Implement TypingIndicator**
 
@@ -1348,7 +1370,28 @@ defmodule PhoenixFilamentAI.Chat.ChatThread do
 
   @impl true
   def update(assigns, socket) do
-    socket = assign(socket, assigns)
+    # Process streaming assigns from parent before normal assign merge
+    socket =
+      cond do
+        Map.has_key?(assigns, :ai_chunk) ->
+          handle_ai_chunk(assigns.ai_chunk, socket)
+
+        Map.has_key?(assigns, :ai_complete) ->
+          handle_ai_complete(assigns.ai_complete, socket)
+
+        Map.has_key?(assigns, :ai_error) ->
+          handle_ai_error(assigns.ai_error, socket)
+
+        true ->
+          socket
+      end
+
+    # Drop streaming keys before merge to avoid stale assigns
+    clean_assigns =
+      assigns
+      |> Map.drop([:ai_chunk, :ai_complete, :ai_error])
+
+    socket = assign(socket, clean_assigns)
 
     socket =
       if changed?(socket, :conversation_id) do
@@ -1364,9 +1407,22 @@ defmodule PhoenixFilamentAI.Chat.ChatThread do
   def handle_event("send_message", %{"message" => message}, socket) when message != "" do
     store = socket.assigns.store
     conversation_id = socket.assigns.conversation_id
+    config = socket.assigns.config
+
+    converse_opts =
+      [
+        provider: Keyword.get(config, :provider),
+        model: Keyword.get(config, :model),
+        system: get_system_prompt(config),
+        api_key: Keyword.get(config, :api_key)
+      ]
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
     user_message = %{role: :user, content: message, id: generate_id()}
     placeholder = %{role: :assistant, content: "", id: generate_id()}
+
+    # Notify parent to start streaming (parent holds the Task ref)
+    send(self(), {:start_ai_stream, store, conversation_id, message, converse_opts})
 
     socket =
       socket
@@ -1375,8 +1431,6 @@ defmodule PhoenixFilamentAI.Chat.ChatThread do
       |> assign(:current_response, "")
       |> assign(:input_value, "")
       |> assign(:last_message_for_retry, message)
-
-    socket = StreamHandler.start_stream(socket, store, conversation_id, message)
 
     {:noreply, socket}
   end
@@ -1422,32 +1476,28 @@ defmodule PhoenixFilamentAI.Chat.ChatThread do
     end
   end
 
-  # --- handle_info for streaming ---
+  # --- Streaming handlers (called from update/2 via send_update from parent) ---
 
-  @impl true
-  def handle_info({:ai_chunk, chunk}, socket) do
-    current = socket.assigns.current_response <> chunk
-    messages = update_last_assistant_message(socket.assigns.messages, current)
+  defp handle_ai_chunk(chunk, socket) do
+    new_content = socket.assigns.current_response <> (chunk.delta || "")
+    messages = update_last_assistant_message(socket.assigns.messages, new_content)
 
-    {:noreply,
-     socket
-     |> assign(:current_response, current)
-     |> assign(:messages, messages)}
+    socket
+    |> assign(:current_response, new_content)
+    |> assign(:messages, messages)
   end
 
-  @impl true
-  def handle_info({:ai_complete, response}, socket) do
-    messages = update_last_assistant_message(socket.assigns.messages, response.content)
+  defp handle_ai_complete(response, socket) do
+    messages = update_last_assistant_message(socket.assigns.messages, response.content || "")
 
-    {:noreply,
-     socket
-     |> assign(:streaming, false)
-     |> assign(:current_response, "")
-     |> assign(:messages, messages)}
+    socket
+    |> assign(:streaming, false)
+    |> assign(:current_response, "")
+    |> assign(:task_ref, nil)
+    |> assign(:messages, messages)
   end
 
-  @impl true
-  def handle_info({:ai_error, reason}, socket) do
+  defp handle_ai_error(reason, socket) do
     error_type = StreamHandler.classify_error(reason)
     error_msg = StreamHandler.error_message(reason)
 
@@ -1458,21 +1508,16 @@ defmodule PhoenixFilamentAI.Chat.ChatThread do
 
     error_message = %{role: :error, content: error_msg, id: generate_id(), error_type: error_type}
 
-    socket =
-      socket
-      |> assign(:streaming, false)
-      |> assign(:current_response, "")
-      |> assign(:messages, messages ++ [error_message])
+    socket
+    |> assign(:streaming, false)
+    |> assign(:current_response, "")
+    |> assign(:task_ref, nil)
+    |> assign(:messages, messages ++ [error_message])
+  end
 
-    # Flash for critical errors
-    socket =
-      if error_type == :fatal do
-        Phoenix.LiveView.put_flash(socket, :error, error_msg)
-      else
-        socket
-      end
-
-    {:noreply, socket}
+  defp get_system_prompt(config) do
+    chat_opts = Keyword.get(config, :chat, [])
+    Keyword.get(chat_opts, :system_prompt)
   end
 
   # --- Render ---
@@ -1927,7 +1972,8 @@ defmodule PhoenixFilamentAI.Chat.ChatPage do
      |> assign(:config, config)
      |> assign(:conversations, conversations)
      |> assign(:search_query, "")
-     |> assign(:conversation_id, nil)}
+     |> assign(:conversation_id, nil)
+     |> assign(:task_ref, nil)}
   end
 
   @impl true
@@ -1990,22 +2036,42 @@ defmodule PhoenixFilamentAI.Chat.ChatPage do
     end
   end
 
-  # Forward streaming messages to ChatThread
+  # --- Streaming message routing ---
+  # ChatThread is a LiveComponent, so it can't receive handle_info directly.
+  # The parent (this LiveView) receives all messages and routes via send_update.
+
+  # Start streaming — triggered by ChatThread via send(self(), ...)
   @impl true
-  def handle_info({:ai_chunk, _chunk} = msg, socket) do
-    send_update(ChatThread, id: "page-chat-thread", streaming_message: msg)
+  def handle_info({:start_ai_stream, store, conversation_id, message, opts}, socket) do
+    task = StreamHandler.start(store, conversation_id, message, opts)
+    {:noreply, assign(socket, :task_ref, task.ref)}
+  end
+
+  # Streaming chunks — sent directly by Store via `to: pid`
+  def handle_info({:phoenix_ai, {:chunk, chunk}}, socket) do
+    send_update(ChatThread, id: "page-chat-thread", ai_chunk: chunk)
     {:noreply, socket}
   end
 
-  def handle_info({:ai_complete, _response} = msg, socket) do
-    conversations = load_conversations(socket.assigns.store)
-    send_update(ChatThread, id: "page-chat-thread", streaming_message: msg)
-    {:noreply, assign(socket, :conversations, conversations)}
+  # Task completion — Store.converse returned {:ok, response}
+  def handle_info({ref, {:ok, response}}, socket) when ref == socket.assigns.task_ref do
+    Process.demonitor(ref, [:flush])
+    send_update(ChatThread, id: "page-chat-thread", ai_complete: response)
+    conversations = load_conversations(socket.assigns.store, socket.assigns.search_query)
+    {:noreply, socket |> assign(:conversations, conversations) |> assign(:task_ref, nil)}
   end
 
-  def handle_info({:ai_error, _reason} = msg, socket) do
-    send_update(ChatThread, id: "page-chat-thread", streaming_message: msg)
-    {:noreply, socket}
+  # Task error — Store.converse returned {:error, reason}
+  def handle_info({ref, {:error, reason}}, socket) when ref == socket.assigns.task_ref do
+    Process.demonitor(ref, [:flush])
+    send_update(ChatThread, id: "page-chat-thread", ai_error: reason)
+    {:noreply, assign(socket, :task_ref, nil)}
+  end
+
+  # Task crash — handle DOWN message
+  def handle_info({:DOWN, ref, :process, _pid, reason}, socket) when ref == socket.assigns.task_ref do
+    send_update(ChatThread, id: "page-chat-thread", ai_error: reason)
+    {:noreply, assign(socket, :task_ref, nil)}
   end
 
   @impl true
@@ -2211,7 +2277,7 @@ git commit -m "chore: Phase 1 complete — Foundation + Chat"
 | PLUG-05 | Task 3 | Only :store, :provider, :model required; rest has defaults |
 | CHAT-01 | Task 7 | ChatWidget with configurable column_span and sort |
 | CHAT-02 | Task 6 | ChatThread + StreamHandler for streaming |
-| CHAT-03 | Task 6 | StreamHandler uses start_async (non-blocking) |
+| CHAT-03 | Task 6 | StreamHandler uses Task.async + `to: pid` streaming (non-blocking) |
 | CHAT-04 | Task 5 | MDEx markdown rendering |
 | CHAT-05 | Task 7 | New conversation button in widget |
 | CHAT-06 | Task 4, 6 | StoreAdapter + ChatThread conversation persistence |

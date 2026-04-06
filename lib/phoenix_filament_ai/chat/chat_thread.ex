@@ -19,6 +19,11 @@ defmodule PhoenixFilamentAI.Chat.ChatThread do
   ## Optional Assigns
 
   - `:conversation_id` — existing conversation ID (`nil` = new conversation)
+  - `:stream_mode` — streaming strategy (default `:parent_routed`)
+    - `:parent_routed` — parent LiveView manages the Task and routes chunks
+      via `send_update`. Use when parent handles `{:start_ai_stream, ...}`.
+    - `:self_managed` — ChatThread manages its own Task with `on_chunk`
+      callback. Use inside widgets where the parent doesn't route messages.
   """
 
   use Phoenix.LiveComponent
@@ -52,12 +57,32 @@ defmodule PhoenixFilamentAI.Chat.ChatThread do
      |> assign(:has_more, false)
      |> assign(:cursor, nil)
      |> assign(:last_message_for_retry, nil)
-     |> assign(:task_ref, nil)}
+     |> assign(:task_ref, nil)
+     |> assign_new(:stream_mode, fn -> :parent_routed end)}
   end
 
   @impl true
   def update(assigns, socket) do
-    socket = assign(socket, assigns)
+    # Process streaming assigns from parent (via send_update) before normal merge.
+    # These are routed by the parent LiveView which receives handle_info messages.
+    socket =
+      cond do
+        Map.has_key?(assigns, :ai_chunk) ->
+          handle_ai_chunk(assigns.ai_chunk, socket)
+
+        Map.has_key?(assigns, :ai_complete) ->
+          handle_ai_complete(assigns.ai_complete, socket)
+
+        Map.has_key?(assigns, :ai_error) ->
+          handle_ai_error(assigns.ai_error, socket)
+
+        true ->
+          socket
+      end
+
+    # Drop streaming keys before merge to avoid stale assigns
+    clean_assigns = Map.drop(assigns, [:ai_chunk, :ai_complete, :ai_error])
+    socket = assign(socket, clean_assigns)
 
     socket =
       if assign_changed?(socket, :conversation_id) do
@@ -216,29 +241,78 @@ defmodule PhoenixFilamentAI.Chat.ChatThread do
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
     if conversation_id do
-      task = StreamHandler.start(store, conversation_id, message, converse_opts)
-
-      socket
-      |> assign(:streaming, true)
-      |> assign(:current_response, "")
-      |> assign(:task_ref, task.ref)
+      launch_stream(socket, store, conversation_id, message, converse_opts)
     else
       # No conversation yet — create one first, then converse
       case StoreAdapter.create_conversation(store, %{title: truncate(message, 50)}) do
         {:ok, conv} ->
-          task = StreamHandler.start(store, conv.id, message, converse_opts)
-
           socket
           |> assign(:conversation_id, conv.id)
-          |> assign(:streaming, true)
-          |> assign(:current_response, "")
-          |> assign(:task_ref, task.ref)
+          |> launch_stream(store, conv.id, message, converse_opts)
 
         {:error, reason} ->
           Logger.error("Failed to create conversation: #{inspect(reason)}")
           add_error_message(socket, reason)
       end
     end
+  end
+
+  # :parent_routed — parent LiveView handles Task and routes messages via send_update.
+  # Used when parent is a LiveView we control (e.g. ChatPage).
+  defp launch_stream(
+         %{assigns: %{stream_mode: :parent_routed}} = socket,
+         store,
+         conv_id,
+         message,
+         opts
+       ) do
+    send(self(), {:start_ai_stream, store, conv_id, message, opts})
+
+    socket
+    |> assign(:streaming, true)
+    |> assign(:current_response, "")
+  end
+
+  # :self_managed — ChatThread manages its own streaming process.
+  # Used when parent doesn't know about streaming (e.g. dashboard widgets).
+  # Uses a simple spawn (no link) so a crash won't take down the LiveView.
+  # The on_chunk callback calls send_update directly to route chunks back.
+  # Completion/error is also routed via send_update from the spawned process.
+  defp launch_stream(
+         %{assigns: %{stream_mode: :self_managed}} = socket,
+         store,
+         conv_id,
+         message,
+         opts
+       ) do
+    component_id = socket.assigns.id
+    parent_pid = self()
+
+    spawn(fn ->
+      result =
+        StoreAdapter.converse(
+          store,
+          conv_id,
+          message,
+          Keyword.merge(opts,
+            on_chunk: fn chunk ->
+              send_update(parent_pid, __MODULE__, id: component_id, ai_chunk: chunk)
+            end
+          )
+        )
+
+      case result do
+        {:ok, response} ->
+          send_update(parent_pid, __MODULE__, id: component_id, ai_complete: response)
+
+        {:error, reason} ->
+          send_update(parent_pid, __MODULE__, id: component_id, ai_error: reason)
+      end
+    end)
+
+    socket
+    |> assign(:streaming, true)
+    |> assign(:current_response, "")
   end
 
   # -------------------------------------------------------------------
@@ -304,23 +378,35 @@ defmodule PhoenixFilamentAI.Chat.ChatThread do
   # Private — AI Response Handling (called from parent LiveView)
   # -------------------------------------------------------------------
 
-  @doc false
-  def handle_ai_complete(response, socket) do
+  defp handle_ai_complete(response, socket) do
     assistant_msg = %{
       role: :assistant,
       content: response.content || "",
       id: generate_id()
     }
 
+    # Replace the streaming placeholder if present, otherwise append
+    messages =
+      case List.last(socket.assigns.messages) do
+        %{id: "streaming"} ->
+          List.replace_at(
+            socket.assigns.messages,
+            length(socket.assigns.messages) - 1,
+            assistant_msg
+          )
+
+        _ ->
+          socket.assigns.messages ++ [assistant_msg]
+      end
+
     socket
     |> assign(:streaming, false)
     |> assign(:current_response, "")
     |> assign(:task_ref, nil)
-    |> update(:messages, &(&1 ++ [assistant_msg]))
+    |> assign(:messages, messages)
   end
 
-  @doc false
-  def handle_ai_chunk(chunk, socket) do
+  defp handle_ai_chunk(chunk, socket) do
     new_content = socket.assigns.current_response <> (chunk.delta || "")
 
     # Update or append the streaming assistant message
@@ -331,12 +417,15 @@ defmodule PhoenixFilamentAI.Chat.ChatThread do
     |> assign(:messages, messages)
   end
 
-  @doc false
-  def handle_ai_error(reason, socket) do
+  defp handle_ai_error(reason, socket) do
+    # Remove the streaming placeholder if present
+    messages = Enum.reject(socket.assigns.messages, &(&1.id == "streaming"))
+
     socket
     |> assign(:streaming, false)
     |> assign(:current_response, "")
     |> assign(:task_ref, nil)
+    |> assign(:messages, messages)
     |> add_error_message(reason)
   end
 

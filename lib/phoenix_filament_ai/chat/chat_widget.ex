@@ -80,6 +80,7 @@ defmodule PhoenixFilamentAI.ChatWidget do
           store={@config[:store]}
           config={@config}
           conversation_id={@conversation_id}
+          stream_mode={:self_managed}
         />
       </div>
     </div>

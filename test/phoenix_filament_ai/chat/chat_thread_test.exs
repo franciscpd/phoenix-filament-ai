@@ -69,7 +69,7 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
     end
   end
 
-  describe "handle_ai_complete/2" do
+  describe "update/2 with :ai_complete" do
     test "adds assistant message and clears streaming state" do
       socket =
         build_socket(%{
@@ -80,7 +80,7 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
         })
 
       response = %{content: "Hello! How can I help?"}
-      updated = ChatThread.handle_ai_complete(response, socket)
+      {:ok, updated} = ChatThread.update(%{ai_complete: response}, socket)
 
       assert updated.assigns.streaming == false
       assert updated.assigns.current_response == ""
@@ -102,14 +102,38 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
         })
 
       response = %{content: nil}
-      updated = ChatThread.handle_ai_complete(response, socket)
+      {:ok, updated} = ChatThread.update(%{ai_complete: response}, socket)
 
       last_msg = List.last(updated.assigns.messages)
       assert last_msg.content == ""
     end
+
+    test "replaces streaming placeholder instead of duplicating" do
+      socket =
+        build_socket(%{
+          messages: [
+            %{role: :user, content: "Hi", id: "msg-1"},
+            %{role: :assistant, content: "Hello wor", id: "streaming"}
+          ],
+          streaming: true,
+          current_response: "Hello wor",
+          task_ref: make_ref()
+        })
+
+      response = %{content: "Hello world!"}
+      {:ok, updated} = ChatThread.update(%{ai_complete: response}, socket)
+
+      # Should still be 2 messages — placeholder replaced, not appended
+      assert length(updated.assigns.messages) == 2
+
+      last_msg = List.last(updated.assigns.messages)
+      assert last_msg.role == :assistant
+      assert last_msg.content == "Hello world!"
+      assert last_msg.id != "streaming"
+    end
   end
 
-  describe "handle_ai_chunk/2" do
+  describe "update/2 with :ai_chunk" do
     test "accumulates chunk content and creates streaming message" do
       socket =
         build_socket(%{
@@ -119,7 +143,7 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
         })
 
       chunk = %{delta: "Hello"}
-      updated = ChatThread.handle_ai_chunk(chunk, socket)
+      {:ok, updated} = ChatThread.update(%{ai_chunk: chunk}, socket)
 
       assert updated.assigns.current_response == "Hello"
       assert length(updated.assigns.messages) == 2
@@ -142,7 +166,7 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
         })
 
       chunk = %{delta: "lo"}
-      updated = ChatThread.handle_ai_chunk(chunk, socket)
+      {:ok, updated} = ChatThread.update(%{ai_chunk: chunk}, socket)
 
       assert updated.assigns.current_response == "Hello"
       # Should still be 2 messages (user + streaming assistant)
@@ -161,13 +185,13 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
         })
 
       chunk = %{delta: nil}
-      updated = ChatThread.handle_ai_chunk(chunk, socket)
+      {:ok, updated} = ChatThread.update(%{ai_chunk: chunk}, socket)
 
       assert updated.assigns.current_response == "Hello"
     end
   end
 
-  describe "handle_ai_error/2" do
+  describe "update/2 with :ai_error" do
     test "adds error message and clears streaming state" do
       socket =
         build_socket(%{
@@ -177,7 +201,7 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
           task_ref: make_ref()
         })
 
-      updated = ChatThread.handle_ai_error(:timeout, socket)
+      {:ok, updated} = ChatThread.update(%{ai_error: :timeout}, socket)
 
       assert updated.assigns.streaming == false
       assert updated.assigns.current_response == ""
@@ -198,11 +222,33 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
           task_ref: make_ref()
         })
 
-      updated = ChatThread.handle_ai_error(:invalid_api_key, socket)
+      {:ok, updated} = ChatThread.update(%{ai_error: :invalid_api_key}, socket)
 
       error_msg = List.last(updated.assigns.messages)
       assert error_msg.role == :error
       assert error_msg.content =~ "Invalid API key"
+    end
+
+    test "removes streaming placeholder before adding error" do
+      socket =
+        build_socket(%{
+          messages: [
+            %{role: :user, content: "Hi", id: "msg-1"},
+            %{role: :assistant, content: "partial", id: "streaming"}
+          ],
+          streaming: true,
+          current_response: "partial",
+          task_ref: make_ref()
+        })
+
+      {:ok, updated} = ChatThread.update(%{ai_error: :timeout}, socket)
+
+      # Streaming placeholder should be gone, replaced by error
+      assert length(updated.assigns.messages) == 2
+      refute Enum.any?(updated.assigns.messages, &(&1.id == "streaming"))
+
+      last_msg = List.last(updated.assigns.messages)
+      assert last_msg.role == :error
     end
   end
 
@@ -252,6 +298,7 @@ defmodule PhoenixFilamentAI.Chat.ChatThreadTest do
       config: @valid_config,
       conversation_id: nil,
       id: "test-thread",
+      stream_mode: :parent_routed,
       __changed__: %{}
     }
 

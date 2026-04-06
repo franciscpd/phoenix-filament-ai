@@ -90,7 +90,7 @@ lib/
 │   │   ├── chat_widget.ex             # Dashboard widget shell
 │   │   ├── chat_page.ex               # Full-screen LiveView
 │   │   ├── sidebar.ex                 # Conversation sidebar component
-│   │   └── stream_handler.ex          # Streaming logic (start_async, handle_info)
+│   │   └── stream_handler.ex          # Streaming logic (Task.async + to:pid, error classification)
 │   └── components/
 │       ├── message_component.ex       # Single message renderer
 │       ├── markdown.ex                # MDEx wrapper (streaming + complete)
@@ -140,7 +140,7 @@ defmodule PhoenixFilamentAI.StoreAdapter do
   # Streaming
   def converse(store, conversation_id, message, opts \\ [])
     # Delegates to PhoenixAI.Store.converse/3
-    # opts include streaming callbacks (on_chunk, on_complete)
+    # opts include streaming option: `to: pid` for PID-based streaming
 
   # Store info
   def backend_type(store)  # :ets | :ecto — for ETS warning banner
@@ -209,6 +209,30 @@ Both user and assistant messages pass through the same MDEx rendering pipeline. 
 
 ## 4. Streaming Pipeline
 
+### PhoenixAI.Store Streaming API (verified 2026-04-06)
+
+The Store's `converse/3` supports two mutually exclusive streaming modes:
+
+| Mode | Option | Mechanism |
+|------|--------|-----------|
+| **Callback** | `on_chunk: fn %StreamChunk{} -> ... end` | Function called per token inside the Store's task |
+| **PID** | `to: pid` | Store sends `{:phoenix_ai, {:chunk, %StreamChunk{}}}` to the target process |
+
+Both modes return `{:ok, %Response{}}` after the stream completes. There is **no separate `on_complete` callback** — completion is the return value. Passing both `on_chunk` and `to` returns `{:error, :conflicting_streaming_options}`.
+
+The Store persists messages, costs, and events identically for streaming and non-streaming. A `streaming: true/false` flag is included in event logs and telemetry metadata.
+
+**StreamChunk struct:** `%PhoenixAI.StreamChunk{delta: "token text"}` — the `delta` field contains the incremental text.
+
+### Design Decision: Use `to: pid` Mode
+
+We use **PID-based streaming** (`to: self()`) because:
+
+1. The LiveView process (ChatPage/ChatWidget parent) is already a GenServer that handles messages via `handle_info/2`
+2. No intermediate Task needed — Store sends chunks directly to the LiveView process
+3. The `on_chunk` callback runs inside the Store's internal task — `self()` inside it is NOT the LiveView PID, making it error-prone for message passing
+4. Simpler error handling — Task failure is handled by the Task's monitor, not by callback exceptions
+
 ### Data Flow
 
 ```
@@ -220,41 +244,85 @@ ChatThread receives "send_message" event
        ├─ 1. Add user message to @messages (optimistic UI)
        ├─ 2. Set @streaming = true
        ├─ 3. Add placeholder assistant message (@current_response = "")
-       └─ 4. Call StreamHandler.start_stream/3
+       └─ 4. Call StreamHandler.start_stream/4
               │
-              ├─ Uses start_async/3 (non-blocking)
-              └─ Calls StoreAdapter.converse/4 with callbacks:
-                   ├─ on_chunk: fn chunk → send(caller, {:ai_chunk, chunk}) end
-                   └─ on_complete: fn response → send(caller, {:ai_complete, response}) end
+              └─ Spawns Task.async that calls StoreAdapter.converse/4
+                 with `to: caller_pid` (the parent LiveView PID)
+                 │
+                 ├─ Store sends {:phoenix_ai, {:chunk, %StreamChunk{delta: "..."}}}
+                 │   directly to the LiveView process (not through the Task)
+                 │
+                 └─ Store.converse returns {:ok, %Response{}} when stream ends
+                    → Task sends {:ai_complete, response} to caller
 
-Token by token:
+Token by token (chunks arrive at parent LiveView via handle_info):
        │
        ▼
-ChatThread handle_info({:ai_chunk, chunk})
+ChatPage/ChatWidget handle_info({:phoenix_ai, {:chunk, chunk}})
        │
-       ├─ Append chunk to @current_response
+       ├─ send_update(ChatThread, id: "...", ai_chunk: chunk)
+       │
+       ▼
+ChatThread.update/2 processes :ai_chunk assign
+       │
+       ├─ Append chunk.delta to @current_response
+       ├─ Update last assistant message content
        ├─ Re-render MessageComponent with streaming: true
        │   └─ MDEx renders partial markdown progressively
        └─ Auto-scroll to bottom (JS hook)
 
-Complete:
+Complete (Task return arrives at parent LiveView):
        │
        ▼
-ChatThread handle_info({:ai_complete, response})
+ChatPage/ChatWidget handle_info({ref, {:ok, response}})
+       │
+       ├─ Process.demonitor(ref, [:flush])
+       ├─ send_update(ChatThread, id: "...", ai_complete: response)
+       │
+       ▼
+ChatThread.update/2 processes :ai_complete assign
        │
        ├─ Set @streaming = false
        ├─ Replace placeholder with final message in @messages
        ├─ Re-render with streaming: false (final MDEx pass)
        └─ Enable input field
+
+Error (Task failure or Store error):
+       │
+       ▼
+ChatPage/ChatWidget handle_info({ref, {:error, reason}})
+       │
+       ├─ Process.demonitor(ref, [:flush])
+       ├─ send_update(ChatThread, id: "...", ai_error: reason)
+       │
+       ▼
+ChatThread.update/2 processes :ai_error assign
+       │
+       ├─ Remove placeholder message
+       ├─ Add error message with classification (retriable/fatal/domain)
+       ├─ Set @streaming = false
+       └─ Flash for fatal errors
 ```
 
 ### StreamHandler Module
 
-**Responsibilities:** launches the streaming task (via `Task.start` or `start_async/3` depending on PhoenixAI's callback model), builds streaming callbacks that send messages to the caller process, classifies errors (retriable vs fatal).
+**Responsibilities:** Spawns a `Task.async` that calls `StoreAdapter.converse/4` with `to: caller_pid`. Classifies errors (retriable vs fatal). Generates user-friendly error messages.
 
-**Important:** Streaming chunks arrive via `handle_info` (not `handle_async`). The `on_chunk` callback does `send(caller, {:ai_chunk, chunk})` from inside the task, which the LiveView receives as `handle_info`. The task completion/failure may use `handle_async` if `start_async` is used, or a final `send` if `Task.start` is used. The exact mechanism depends on PhoenixAI's streaming API — verify during implementation.
+**Key detail:** The Task wraps the `converse/4` call to capture the final `{:ok, response}` or `{:error, reason}` return value. Streaming chunks bypass the Task entirely — they go directly from Store to the LiveView process via `to: caller_pid`. The Task's only role is to:
+1. Hold the `converse/4` call (blocking inside the Task, non-blocking for the LiveView)
+2. Forward the final result via the standard Task return mechanism (`{ref, result}`)
 
-**Does NOT:** render anything, manage message list, touch the DOM, call Store directly (uses StoreAdapter).
+**Does NOT:** render anything, manage message list, touch the DOM, handle chunks (Store sends those directly).
+
+### ChatThread as LiveComponent — Message Routing
+
+Since `ChatThread` is a `LiveComponent` (not a LiveView), it cannot receive `handle_info` directly. The parent process (ChatPage or ChatWidget) receives all messages and routes them via `send_update/3`:
+
+- `{:phoenix_ai, {:chunk, chunk}}` → `send_update(ChatThread, id: ..., ai_chunk: chunk)`
+- Task `{ref, {:ok, response}}` → `send_update(ChatThread, id: ..., ai_complete: response)`
+- Task `{ref, {:error, reason}}` → `send_update(ChatThread, id: ..., ai_error: reason)`
+
+ChatThread's `update/2` callback must detect and process these special assigns before the normal assign merge.
 
 ### Chunk Batching
 
@@ -398,7 +466,8 @@ If LiveView reconnects during streaming (e.g., user switches tab and returns), `
 
 - `test/support/fixtures.ex` — helpers for creating conversations, messages, store configs
 - Store configured in `test_helper.exs` with ETS backend (fast, no DB)
-- Streaming tested by simulating `send(view.pid, {:ai_chunk, "token"})` — deterministic, no real AI calls
+- Streaming tested by simulating `send(view.pid, {:phoenix_ai, {:chunk, %PhoenixAI.StreamChunk{delta: "token"}}})` — deterministic, no real AI calls
+- Task completion tested by simulating `send(view.pid, {ref, {:ok, %Response{}}})` with a mock reference
 
 ---
 
@@ -409,7 +478,7 @@ If LiveView reconnects during streaming (e.g., user switches tab and returns), `
 3. **NimbleOptions config** — validates compile-time checking works
 4. **StoreAdapter** — validates PhoenixAI.Store API
 5. **MessageComponent + MDEx** — validates markdown rendering pipeline
-6. **ChatThread + StreamHandler** — validates streaming pattern (start_async + handle_info)
+6. **ChatThread + StreamHandler** — validates streaming pattern (Task.async + `to: pid` + handle_info routing)
 7. **ChatWidget** — dashboard integration
 8. **ChatPage + Sidebar** — full-screen layout
 9. **Polish** — empty states, error UX, copy button, ETS warning, typing indicator

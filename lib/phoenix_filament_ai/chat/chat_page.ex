@@ -21,7 +21,7 @@ defmodule PhoenixFilamentAI.ChatLive do
 
   use Phoenix.LiveView
 
-  alias PhoenixFilamentAI.Chat.{ChatThread, Sidebar}
+  alias PhoenixFilamentAI.Chat.{ChatThread, Sidebar, StreamHandler}
   alias PhoenixFilamentAI.StoreAdapter
 
   require Logger
@@ -44,7 +44,8 @@ defmodule PhoenixFilamentAI.ChatLive do
      |> assign(:conversations, conversations)
      |> assign(:conversation_id, nil)
      |> assign(:search_query, "")
-     |> assign(:page_title, "Chat")}
+     |> assign(:page_title, "Chat")
+     |> assign(:task_ref, nil)}
   end
 
   @impl true
@@ -102,37 +103,62 @@ defmodule PhoenixFilamentAI.ChatLive do
   end
 
   # -------------------------------------------------------------------
-  # Info (forward AI messages to ChatThread)
+  # Info — Streaming message routing
   # -------------------------------------------------------------------
+  # ChatThread is a LiveComponent and cannot receive handle_info.
+  # This LiveView receives all streaming messages and routes them
+  # to ChatThread via send_update/3.
 
   @impl true
-  def handle_info({:ai_complete, response}, socket) do
-    send_update(ChatThread, id: "chat-thread", ai_complete: response)
-    conversations = load_conversations(socket.assigns.store, socket.assigns.search_query)
-    {:noreply, assign(socket, :conversations, conversations)}
+  def handle_info({:start_ai_stream, store, conversation_id, message, opts}, socket) do
+    task = StreamHandler.start(store, conversation_id, message, opts)
+    {:noreply, assign(socket, :task_ref, task.ref)}
   end
 
-  def handle_info({:ai_error, reason}, socket) do
-    send_update(ChatThread, id: "chat-thread", ai_error: reason)
+  # Streaming chunks — sent directly by Store via `to: pid`.
+  # Only forward if we have an active stream (task_ref != nil) to avoid
+  # routing stale chunks from a previous conversation after a switch.
+  def handle_info({:phoenix_ai, {:chunk, chunk}}, socket) do
+    if socket.assigns.task_ref do
+      send_update(ChatThread, id: "chat-thread", ai_chunk: chunk)
+    end
+
     {:noreply, socket}
   end
 
-  def handle_info({ref, result}, socket) when is_reference(ref) do
-    # Task completion — forward to ChatThread
+  # Task completion — Store.converse returned {:ok, response}
+  def handle_info({ref, {:ok, response}}, socket) when ref == socket.assigns.task_ref do
     Process.demonitor(ref, [:flush])
+    send_update(ChatThread, id: "chat-thread", ai_complete: response)
+    conversations = load_conversations(socket.assigns.store, socket.assigns.search_query)
 
-    case result do
-      {:ok, response} ->
-        send_update(ChatThread, id: "chat-thread", ai_complete: response)
-        conversations = load_conversations(socket.assigns.store, socket.assigns.search_query)
-        {:noreply, assign(socket, :conversations, conversations)}
-
-      {:error, reason} ->
-        send_update(ChatThread, id: "chat-thread", ai_error: reason)
-        {:noreply, socket}
-    end
+    {:noreply,
+     socket
+     |> assign(:conversations, conversations)
+     |> assign(:task_ref, nil)}
   end
 
+  # Task error — Store.converse returned {:error, reason}
+  def handle_info({ref, {:error, reason}}, socket) when ref == socket.assigns.task_ref do
+    Process.demonitor(ref, [:flush])
+    send_update(ChatThread, id: "chat-thread", ai_error: reason)
+    {:noreply, assign(socket, :task_ref, nil)}
+  end
+
+  # Ignore results from stale/unknown tasks (e.g. after conversation switch)
+  def handle_info({ref, _result}, socket) when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, socket}
+  end
+
+  # Task crash — handle DOWN message
+  def handle_info({:DOWN, ref, :process, _pid, reason}, socket)
+      when ref == socket.assigns.task_ref do
+    send_update(ChatThread, id: "chat-thread", ai_error: reason)
+    {:noreply, assign(socket, :task_ref, nil)}
+  end
+
+  # Ignore unrelated DOWN messages (e.g. from previously completed tasks)
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, socket) do
     {:noreply, socket}
   end
