@@ -48,7 +48,7 @@ defmodule PhoenixFilamentAI.MixProject do
       # Runtime
       {:phoenix_filament, "~> 0.1"},
       {:phoenix_ai, "~> 0.3"},
-      {:phoenix_ai_store, "~> 0.1"},
+      {:phoenix_ai_store, "~> 0.3"},
       {:nimble_options, "~> 1.1"},
       {:mdex, "~> 0.12"},
       {:plox, "~> 0.3"},
