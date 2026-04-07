@@ -109,8 +109,10 @@ defmodule PhoenixFilamentAI.Costs.Charts do
         color = Enum.at(@pie_colors, rem(idx, length(@pie_colors)))
         y = 15 + idx * 20
 
+        safe_label = escape(slice.label)
+
         ~s(<rect x="130" y="#{y}" width="10" height="10" rx="2" fill="#{color}"/>) <>
-          ~s(<text x="145" y="#{y + 9}" fill="#475569" font-size="11">#{slice.label} — #{Float.round(slice.percentage, 1)}%</text>)
+          ~s(<text x="145" y="#{y + 9}" fill="#475569" font-size="11">#{safe_label} — #{Float.round(slice.percentage, 1)}%</text>)
       end)
 
     height = max(120, 15 + length(slices) * 20 + 10)
@@ -164,4 +166,17 @@ defmodule PhoenixFilamentAI.Costs.Charts do
 
   @doc "Returns the default bar chart color."
   def bar_color, do: @bar_color
+
+  # Escapes HTML special characters for safe SVG text interpolation.
+  defp escape(text) when is_binary(text) do
+    text
+    |> String.replace("&", "&amp;")
+    |> String.replace("<", "&lt;")
+    |> String.replace(">", "&gt;")
+    |> String.replace("\"", "&quot;")
+    |> String.replace("'", "&#39;")
+  end
+
+  defp escape(nil), do: "unknown"
+  defp escape(other), do: escape(to_string(other))
 end

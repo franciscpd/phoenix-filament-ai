@@ -38,6 +38,20 @@ defmodule PhoenixFilamentAI.Costs.ChartsTest do
       svg = Charts.pie_chart_svg([])
       assert svg =~ "No data"
     end
+
+    test "escapes HTML in model labels to prevent XSS" do
+      data = [
+        %{
+          label: ~s[</text><script>alert('xss')</script>],
+          amount: Decimal.new("100.00"),
+          percentage: 100.0
+        }
+      ]
+
+      svg = Charts.pie_chart_svg(data)
+      refute svg =~ "<script>"
+      assert svg =~ "&lt;script&gt;"
+    end
   end
 
   describe "sparkline_svg/2" do
