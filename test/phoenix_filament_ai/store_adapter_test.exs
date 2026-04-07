@@ -217,6 +217,78 @@ defmodule PhoenixFilamentAI.StoreAdapterTest do
   # Converse — skipped in unit tests (requires AI provider)
   # -------------------------------------------------------------------
 
+  # -------------------------------------------------------------------
+  # Cost Records
+  # -------------------------------------------------------------------
+
+  describe "list_cost_records/2" do
+    test "returns cost records matching filters" do
+      {:ok, conv} = StoreAdapter.create_conversation(@store_name, %{title: "Cost Test"})
+
+      record = %PhoenixAI.Store.CostTracking.CostRecord{
+        conversation_id: conv.id,
+        user_id: "user-1",
+        provider: :openai,
+        model: "gpt-4o",
+        input_tokens: 100,
+        output_tokens: 50,
+        input_cost: Decimal.new("0.001"),
+        output_cost: Decimal.new("0.002"),
+        total_cost: Decimal.new("0.003"),
+        recorded_at: DateTime.utc_now()
+      }
+
+      {:ok, _saved} = save_cost_record(record)
+
+      assert {:ok, %{records: records}} = StoreAdapter.list_cost_records(@store_name)
+      assert length(records) >= 1
+      assert Enum.any?(records, fn r -> r.conversation_id == conv.id end)
+    end
+
+    test "returns empty records when no cost data exists" do
+      assert {:ok, %{records: []}} = StoreAdapter.list_cost_records(@store_name)
+    end
+
+    test "filters by user_id" do
+      {:ok, conv} = StoreAdapter.create_conversation(@store_name, %{title: "Filter Test"})
+
+      record = %PhoenixAI.Store.CostTracking.CostRecord{
+        conversation_id: conv.id,
+        user_id: "filter-user",
+        provider: :openai,
+        model: "gpt-4o",
+        input_tokens: 10,
+        output_tokens: 5,
+        input_cost: Decimal.new("0.001"),
+        output_cost: Decimal.new("0.001"),
+        total_cost: Decimal.new("0.002"),
+        recorded_at: DateTime.utc_now()
+      }
+
+      {:ok, _saved} = save_cost_record(record)
+
+      assert {:ok, %{records: records}} =
+               StoreAdapter.list_cost_records(@store_name, user_id: "filter-user")
+
+      assert length(records) >= 1
+      assert Enum.all?(records, fn r -> r.user_id == "filter-user" end)
+    end
+  end
+
+  describe "count_cost_records/2" do
+    test "counts cost records" do
+      assert {:ok, count} = StoreAdapter.count_cost_records(@store_name)
+      assert is_integer(count)
+    end
+  end
+
+  # Saves a cost record directly through the adapter (not exposed via Store facade)
+  defp save_cost_record(%PhoenixAI.Store.CostTracking.CostRecord{} = record) do
+    config = PhoenixAI.Store.Instance.get_config(@store_name)
+    adapter_opts = PhoenixAI.Store.Instance.get_adapter_opts(@store_name)
+    config[:adapter].save_cost_record(record, adapter_opts)
+  end
+
   describe "converse/4" do
     @describetag :integration
     test "delegates to PhoenixAI.Store.converse/3" do

@@ -51,6 +51,7 @@ defmodule PhoenixFilamentAI.MixProject do
       {:phoenix_ai_store, "~> 0.1"},
       {:nimble_options, "~> 1.1"},
       {:mdex, "~> 0.12"},
+      {:plox, "~> 0.3"},
       {:makeup, "~> 1.1"},
       {:makeup_elixir, "~> 1.0"},
       {:phoenix_live_view, "~> 1.0"},

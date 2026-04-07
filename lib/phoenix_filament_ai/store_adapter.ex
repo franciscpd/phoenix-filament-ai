@@ -18,6 +18,7 @@ defmodule PhoenixFilamentAI.StoreAdapter do
 
   alias PhoenixAI.Store
   alias PhoenixAI.Store.{Conversation, Message}
+  alias PhoenixAI.Store.CostTracking.CostRecord
 
   # -------------------------------------------------------------------
   # Conversations
@@ -275,6 +276,46 @@ defmodule PhoenixFilamentAI.StoreAdapter do
       PhoenixAI.Store.Adapters.Ecto -> :ecto
       _ -> :unknown
     end
+  end
+
+  # -------------------------------------------------------------------
+  # Cost Records
+  # -------------------------------------------------------------------
+
+  @doc """
+  Lists cost records matching the given filters.
+
+  Delegates to `PhoenixAI.Store.list_cost_records/2` (v0.3.0+).
+
+  ## Filters
+
+  - `:conversation_id` — filter by conversation
+  - `:user_id` — filter by user
+  - `:provider` — filter by provider atom
+  - `:model` — filter by model string
+  - `:after` — records with `recorded_at >= dt`
+  - `:before` — records with `recorded_at <= dt`
+  - `:cursor` — opaque cursor for pagination
+  - `:limit` — max records per page
+
+  Returns `{:ok, %{records: [CostRecord.t()], next_cursor: String.t() | nil}}`.
+  """
+  @spec list_cost_records(atom(), keyword()) ::
+          {:ok, %{records: [CostRecord.t()], next_cursor: String.t() | nil}} | {:error, term()}
+  def list_cost_records(store, filters \\ []) do
+    Store.list_cost_records(filters, store: store)
+  end
+
+  @doc """
+  Counts cost records matching the given filters.
+
+  Delegates to `PhoenixAI.Store.count_cost_records/2` (v0.3.0+).
+  Accepts the same filters as `list_cost_records/2` (excluding `:cursor` and `:limit`).
+  """
+  @spec count_cost_records(atom(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def count_cost_records(store, filters \\ []) do
+    Store.count_cost_records(filters, store: store)
   end
 
   # -------------------------------------------------------------------
