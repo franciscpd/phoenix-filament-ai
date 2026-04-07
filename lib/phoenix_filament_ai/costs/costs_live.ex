@@ -314,10 +314,10 @@ defmodule PhoenixFilamentAI.Costs.CostsLive do
   # Function component — stat card
   # -------------------------------------------------------------------
 
-  attr :label, :string, required: true
-  attr :value, :string, required: true
-  attr :sparkline_points, :list, required: true
-  attr :color, :string, required: true
+  attr(:label, :string, required: true)
+  attr(:value, :string, required: true)
+  attr(:sparkline_points, :list, required: true)
+  attr(:color, :string, required: true)
 
   defp stat_card(assigns) do
     ~H"""
